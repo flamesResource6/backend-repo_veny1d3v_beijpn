@@ -1,8 +1,10 @@
 import os
-from fastapi import FastAPI
+from fastapi import FastAPI, Query
 from fastapi.middleware.cors import CORSMiddleware
+from typing import Optional
+import requests
 
-app = FastAPI()
+app = FastAPI(title="Currency Converter API")
 
 app.add_middleware(
     CORSMiddleware,
@@ -19,6 +21,60 @@ def read_root():
 @app.get("/api/hello")
 def hello():
     return {"message": "Hello from the backend API!"}
+
+
+def fetch_rate(from_currency: str, to_currency: str) -> Optional[float]:
+    """Fetch FX rate using exchangerate.host with graceful fallback.
+    Returns rate or None if unavailable.
+    """
+    try:
+        url = f"https://api.exchangerate.host/latest?base={from_currency.upper()}&symbols={to_currency.upper()}"
+        resp = requests.get(url, timeout=6)
+        if resp.status_code == 200:
+            data = resp.json()
+            rate = data.get("rates", {}).get(to_currency.upper())
+            if isinstance(rate, (int, float)):
+                return float(rate)
+    except Exception:
+        pass
+    return None
+
+@app.get("/api/convert")
+def convert_currency(
+    amount: float = Query(..., gt=0, description="Amount to convert"),
+    from_currency: str = Query("OMR", min_length=3, max_length=3, description="Source currency (e.g., OMR)"),
+    to_currency: str = Query("USD", min_length=3, max_length=3, description="Target currency (e.g., USD)"),
+):
+    from_currency = from_currency.upper()
+    to_currency = to_currency.upper()
+
+    rate = fetch_rate(from_currency, to_currency)
+    source = "live"
+
+    # Fallback: common OMR→USD approximate rate if live fetch fails
+    if rate is None and from_currency == "OMR" and to_currency == "USD":
+        rate = 2.597
+        source = "fallback"
+
+    if rate is None:
+        return {
+            "success": False,
+            "message": "Unable to retrieve exchange rate right now.",
+            "from": from_currency,
+            "to": to_currency,
+        }
+
+    result = amount * rate
+    return {
+        "success": True,
+        "from": from_currency,
+        "to": to_currency,
+        "amount": amount,
+        "rate": rate,
+        "result": result,
+        "source": source,
+    }
+
 
 @app.get("/test")
 def test_database():
